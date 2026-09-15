@@ -153,6 +153,29 @@ impl InputEmulation {
         }
     }
 
+    pub async fn consume_batch(
+        &mut self,
+        events: Vec<Event>,
+        handle: EmulationHandle,
+    ) -> Result<(), EmulationError> {
+        let mut filtered = Vec::new();
+        for event in events {
+            let should_process = match &event {
+                Event::Keyboard(KeyboardEvent::Key { key, state, .. }) => {
+                    self.update_pressed_keys(handle, *key, *state)
+                }
+                _ => true,
+            };
+            if should_process {
+                filtered.push(event);
+            }
+        }
+        if !filtered.is_empty() {
+            self.emulation.consume_batch(filtered, handle).await?;
+        }
+        Ok(())
+    }
+
     pub async fn create(&mut self, handle: EmulationHandle) -> bool {
         if self.handles.insert(handle) {
             self.pressed_keys.insert(handle, HashSet::new());
@@ -234,6 +257,18 @@ trait Emulation: Send {
         event: Event,
         handle: EmulationHandle,
     ) -> Result<(), EmulationError>;
+
+    async fn consume_batch(
+        &mut self,
+        events: Vec<Event>,
+        handle: EmulationHandle,
+    ) -> Result<(), EmulationError> {
+        for event in events {
+            self.consume(event, handle).await?;
+        }
+        Ok(())
+    }
+
     async fn create(&mut self, handle: EmulationHandle);
     async fn destroy(&mut self, handle: EmulationHandle);
     async fn terminate(&mut self);

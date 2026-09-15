@@ -10,6 +10,8 @@ use input_capture::{
 };
 use input_event::{Event, KeyboardEvent, scancode};
 use lan_mouse_proto::ProtoEvent;
+use lan_mouse_proto::batch::MAX_BATCH_EVENTS;
+use lan_mouse_proto::batch::{BatchEncoder, BatchError};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use tokio::task::{JoinHandle, spawn_local};
 use tokio_util::sync::CancellationToken;
@@ -68,6 +70,7 @@ impl Capture {
         backend: Option<input_capture::Backend>,
         conn: LanMouseConnection,
         release_bind: Vec<scancode::Linux>,
+        batched: bool,
     ) -> Self {
         let (request_tx, request_rx) = channel();
         let (event_tx, event_rx) = channel();
@@ -82,6 +85,11 @@ impl Capture {
             request_rx,
             release_bind: Rc::new(RefCell::new(release_bind)),
             state: Default::default(),
+            batched,
+            encoder: BatchEncoder::new(),
+            batch_seq: 0,
+            batch_pending: false,
+            flush_ticker: tokio::time::interval(FLUSH_INTERVAL),
         };
         let task = spawn_local(capture_task.run());
         Self {
@@ -166,7 +174,16 @@ struct CaptureTask {
     release_bind: Rc<RefCell<Vec<scancode::Linux>>>,
     request_rx: Receiver<CaptureRequest>,
     state: State,
+    /// batched binary wire format (fork feature)
+    batched: bool,
+    encoder: BatchEncoder,
+    batch_seq: u16,
+    batch_pending: bool,
+    flush_ticker: tokio::time::Interval,
 }
+
+/// periodic fallback flush so motion events don't linger in the batch
+const FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 
 impl CaptureTask {
     fn add_capture(&mut self, handle: CaptureHandle, pos: Position, capture_type: CaptureType) {
@@ -270,6 +287,11 @@ impl CaptureTask {
                     Some(event) => self.handle_capture_event(capture, event?).await?,
                     None => return Ok(()),
                 },
+                _ = self.flush_ticker.tick() => {
+                    if self.batched && self.batch_pending {
+                        self.flush_batch().await;
+                    }
+                },
                 (handle, event) = self.conn.recv() => {
                     if let Some(active) = self.active_client {
                         if handle != active {
@@ -363,14 +385,30 @@ impl CaptureTask {
 
         let opposite_pos = to_proto_pos(self.get_pos(handle).opposite());
 
-        let event = match event {
-            CaptureEvent::Begin => ProtoEvent::Enter(opposite_pos),
-            CaptureEvent::End => return Ok(()),
-            CaptureEvent::Input(e) => match self.state {
+        if let CaptureEvent::Input(e) = event {
+            if self.state == State::Sending && self.batched && Some(handle) == self.active_client {
+                // batched path: push into the encoder, flush on policy triggers
+                self.push_to_batch(e, handle).await;
+                return Ok(());
+            }
+            // fallback / non-batched path
+            let event = match self.state {
                 // connection not acknowledged, repeat `Enter` event
                 State::WaitingForAck => ProtoEvent::Enter(opposite_pos),
                 State::Sending => ProtoEvent::Input(e),
-            },
+            };
+            if let Err(e) = self.conn.send(event, handle).await {
+                const DUR: Duration = Duration::from_millis(500);
+                debounce!(PREV_LOG, DUR, log::warn!("releasing capture: {e}"));
+                capture.release().await?;
+            }
+            return Ok(());
+        }
+
+        let event = match event {
+            CaptureEvent::Begin => ProtoEvent::Enter(opposite_pos),
+            CaptureEvent::End => return Ok(()),
+            CaptureEvent::Input(_) => unreachable!(),
         };
 
         if let Err(e) = self.conn.send(event, handle).await {
@@ -381,9 +419,77 @@ impl CaptureTask {
         Ok(())
     }
 
+    /// Push an input event into the batch encoder, flushing according to the
+    /// spec'd policy. Returns Err only on connection errors (caller releases).
+    async fn push_to_batch(&mut self, event: Event, handle: CaptureHandle) {
+        match self.encoder.push_event(event) {
+            Ok(()) => {
+                self.batch_pending = true;
+                // flush at capacity
+                if self.encoder.event_count() >= MAX_BATCH_EVENTS {
+                    self.flush_batch().await;
+                }
+            }
+            // Modifiers etc: preserve ordering — flush pending batch first,
+            // then send the non-batchable event via the legacy path
+            Err(BatchError::NonBatchable) => {
+                self.flush_batch().await;
+                let _ = self.conn.send(ProtoEvent::Input(event), handle).await;
+            }
+            // buffer full: flush and retry once (sends immediately — batch was full)
+            Err(BatchError::BufferFull) => {
+                self.flush_batch().await;
+                match self.encoder.push_event(event) {
+                    Ok(()) => {
+                        self.batch_pending = true;
+                        self.flush_batch().await;
+                    }
+                    Err(e) => log::warn!("dropping event after flush: {e}"),
+                }
+            }
+            // wheel value doesn't fit: flush order, then fall back to legacy
+            Err(BatchError::WheelOverflow) => {
+                self.flush_batch().await;
+                let _ = self.conn.send(ProtoEvent::Input(event), handle).await;
+            }
+            Err(e) => log::warn!("batch encode failed, dropping event: {e}"),
+        }
+    }
+
+    /// Encode and send the current batch, bump seq. Resets the encoder.
+    /// Encode errors are swallowed (batch dropped); connection errors are
+    /// logged by send_raw. Never propagates — input keeps flowing.
+    async fn flush_batch(&mut self) {
+        if !self.batch_pending {
+            return;
+        }
+        self.batch_pending = false;
+        if self.encoder.event_count() == 0 {
+            self.encoder.reset();
+            return;
+        }
+        match self.encoder.finish(self.batch_seq) {
+            Ok(buf) => {
+                if let Some(handle) = self.active_client {
+                    match self.conn.send_raw(buf, handle).await {
+                        Ok(()) => self.batch_seq = self.batch_seq.wrapping_add(1),
+                        Err(e) => log::warn!("failed to send batch: {e}"),
+                    }
+                }
+            }
+            Err(e) => log::warn!("batch encode failed, dropping batch: {e}"),
+        }
+        self.encoder.reset();
+    }
+
     async fn release_capture(&mut self, capture: &mut InputCapture) -> Result<(), CaptureError> {
         // If we have an active client, notify them we're leaving
         if let Some(handle) = self.active_client.take() {
+            // flush pending batched input BEFORE key-ups / Leave so the peer
+            // receives all motion/button events first (spec: release 前 flush)
+            if self.batched {
+                self.flush_batch().await;
+            }
             // Synthesize key-up events for every key still held in the
             // capture's pressed_keys set BEFORE sending Leave. Without
             // this, pressing the release-bind chord (typically all four

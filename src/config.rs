@@ -64,6 +64,7 @@ fn default_path() -> Result<PathBuf, VarError> {
 struct ConfigToml {
     capture_backend: Option<CaptureBackend>,
     emulation_backend: Option<EmulationBackend>,
+    batched_protocol: Option<bool>,
     port: Option<u16>,
     release_bind: Option<Vec<scancode::Linux>>,
     cert_path: Option<PathBuf>,
@@ -464,6 +465,14 @@ impl Config {
         self.args
             .emulation_backend
             .or(self.config_toml.as_ref().and_then(|c| c.emulation_backend))
+    }
+
+    /// optional batched protocol mode (default true)
+    pub fn batched_protocol(&self) -> bool {
+        self.config_toml
+            .as_ref()
+            .and_then(|c| c.batched_protocol)
+            .unwrap_or(true)
     }
 
     /// the port to use (initially)

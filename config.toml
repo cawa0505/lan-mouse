@@ -6,6 +6,9 @@ release_bind = [ "KeyA", "KeyS", "KeyD", "KeyF" ]
 # optional port (defaults to 4242)
 port = 4242
 
+# batched binary wire format (fork feature); default true
+# batched_protocol = true # batched binary wire format (fork feature); set false to interoperate with upstream lan-mouse
+
 # list of authorized tls certificate fingerprints that
 # are accepted for incoming traffic
 [authorized_fingerprints]

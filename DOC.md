@@ -75,3 +75,13 @@ This ensures that
 - b) As soon as a virtual input enters another client, lan-mouse will stop receiving events,
 which ensures clients can only be controlled directly and not indirectly through other clients.
 
+## Configuration
+
+Configuration options are defined in `config.toml` and can be overridden via command line arguments:
+
+- `emulation_backend`: Input emulation backend (e.g., "wlroots", "libei", "x11", "windows", "macos", "dummy")
+- `capture_backend`: Input capture backend (e.g., "input-capture-portal", "layer-shell", "x11", "windows", "macos", "dummy")
+- `port`: UDP/TCP port (default: 4242)
+- `release_bind`: Key sequence to release control (default: ["KeyLeftCtrl", "KeyLeftShift", "KeyLeftMeta", "KeyLeftAlt"])
+- `batched_protocol`: Enable batched binary wire format (default: true; set false for upstream compatibility)
+

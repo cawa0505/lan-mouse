@@ -165,6 +165,35 @@ impl LanMouseConnection {
         }
         Err(LanMouseConnectionError::NotConnected)
     }
+
+    /// send raw pre-encoded bytes (batched datagrams) to an active client.
+    /// Mirrors [`Self::send`] but transmits the buffer verbatim.
+    pub(crate) async fn send_raw(
+        &self,
+        buf: &[u8],
+        handle: ClientHandle,
+    ) -> Result<(), LanMouseConnectionError> {
+        if let Some(addr) = self.client_manager.active_addr(handle) {
+            let conn = {
+                let conns = self.conns.lock().await;
+                conns.get(&addr).cloned()
+            };
+            if let Some(conn) = conn {
+                if !self.client_manager.alive(handle) {
+                    return Err(LanMouseConnectionError::TargetEmulationDisabled);
+                }
+                match conn.send(buf).await {
+                    Ok(_) => return Ok(()),
+                    Err(e) => {
+                        log::warn!("client {handle} failed to send: {e}");
+                        disconnect(&self.client_manager, handle, addr, &self.conns).await;
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+        Err(LanMouseConnectionError::NotConnected)
+    }
 }
 
 async fn connect_to_handle(

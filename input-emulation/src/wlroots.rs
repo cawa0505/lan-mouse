@@ -159,6 +159,35 @@ impl Emulation for WlrootsEmulation {
         Ok(())
     }
 
+    async fn consume_batch(
+        &mut self,
+        events: Vec<Event>,
+        handle: EmulationHandle,
+    ) -> Result<(), EmulationError> {
+        if let Some(virtual_input) = self.state.input_for_client.get(&handle) {
+            if self.last_flush_failed {
+                match self.queue.flush() {
+                    Err(WaylandError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
+                        log::warn!("can't keep up, discarding event batch: ({handle})");
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+            virtual_input.consume_events(&events);
+            match self.queue.flush() {
+                Err(WaylandError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
+                    self.last_flush_failed = true;
+                    log::warn!("can't keep up, discarding event batch: ({handle})");
+                }
+                Err(WaylandError::Protocol(e)) => panic!("wayland protocol violation: {e}"),
+                Ok(()) => self.last_flush_failed = false,
+                Err(e) => Err(e)?,
+            }
+        }
+        Ok(())
+    }
+
     async fn create(&mut self, handle: EmulationHandle) {
         self.state.add_client(handle);
         if let Err(e) = self.queue.flush() {
@@ -247,6 +276,100 @@ impl VirtualInput {
             },
         }
         Ok(())
+    }
+
+    /// Consume a slice of events without per-event `frame()` calls.
+    /// Calls `self.pointer.frame()` exactly once at the end if any pointer
+    /// event was consumed. Keyboard events need no frame.
+    /// On bad events (try_into failure), log and continue to the next event.
+    fn consume_events(&self, events: &[Event]) {
+        let now: u32 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u32;
+        let mut had_pointer = false;
+
+        for event in events {
+            match event {
+                Event::Pointer(e) => match e {
+                    PointerEvent::Motion { time, dx, dy } => {
+                        self.pointer.motion(*time, *dx, *dy);
+                        had_pointer = true;
+                    }
+                    PointerEvent::Button {
+                        time,
+                        button,
+                        state,
+                    } => {
+                        if let Ok(state) = (*state).try_into() {
+                            self.pointer.button(*time, *button, state);
+                            had_pointer = true;
+                        } else {
+                            log::debug!("skipping button event with bad state");
+                        }
+                    }
+                    PointerEvent::Axis { time, axis, value } => {
+                        if let Ok(axis) = (*axis as u32).try_into() {
+                            self.pointer.axis(*time, axis, *value);
+                            had_pointer = true;
+                        } else {
+                            log::debug!("skipping axis event with bad axis");
+                        }
+                    }
+                    PointerEvent::AxisDiscrete120 { axis, value } => {
+                        if let Ok(axis) = (*axis as u32).try_into() {
+                            self.pointer.axis_discrete(
+                                now,
+                                axis,
+                                (*value) as f64 / 8.,
+                                (*value) / 120,
+                            );
+                            self.pointer.axis_source(AxisSource::Wheel);
+                            had_pointer = true;
+                        } else {
+                            log::debug!("skipping axis_discrete120 event with bad axis");
+                        }
+                    }
+                },
+                Event::Keyboard(e) => match e {
+                    KeyboardEvent::Key { time, key, state } => {
+                        self.keyboard.key(*time, *key, *state as u32);
+                        if let Ok(mut mods) = self.modifiers.lock() {
+                            if mods.update_by_key_event(*key, *state) {
+                                log::trace!("Key triggers modifier change in batch: {mods:?}");
+                                self.keyboard.modifiers(
+                                    mods.mask_pressed().bits(),
+                                    0,
+                                    mods.mask_locks().bits(),
+                                    0,
+                                );
+                            }
+                        }
+                    }
+                    KeyboardEvent::Modifiers {
+                        depressed: mods_depressed,
+                        latched: mods_latched,
+                        locked: mods_locked,
+                        group,
+                    } => {
+                        // Synchronize internal modifier state, assuming server is authoritative
+                        if let Ok(mut mods) = self.modifiers.lock() {
+                            mods.update_by_mods_event(*e);
+                        }
+                        self.keyboard.modifiers(
+                            *mods_depressed,
+                            *mods_latched,
+                            *mods_locked,
+                            *group,
+                        );
+                    }
+                },
+            }
+        }
+
+        if had_pointer {
+            self.pointer.frame();
+        }
     }
 }
 

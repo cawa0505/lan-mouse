@@ -180,6 +180,11 @@ impl ListenTask {
                             _ => {}
                         }
                     }
+                    Some(ListenEvent::InputBatch { events, addr }) => {
+                        log::trace!("batch <-<-<-<-<- {addr}");
+                        last_response.insert(addr, Instant::now());
+                        self.emulation_proxy.consume_batch(events, addr);
+                    }
                     Some(ListenEvent::Accept { addr, fingerprint }) => {
                         self.event_tx.send(EmulationEvent::Connected { addr, fingerprint }).expect("channel closed");
                     }
@@ -237,6 +242,7 @@ pub(crate) struct EmulationProxy {
 
 enum ProxyRequest {
     Input(Event, SocketAddr),
+    InputBatch(Vec<Event>, SocketAddr),
     Remove(SocketAddr),
     Terminate,
     Reenable,
@@ -286,6 +292,15 @@ impl EmulationProxy {
         }
     }
 
+    fn consume_batch(&self, events: Vec<Event>, addr: SocketAddr) {
+        // ignore events if emulation is currently disabled
+        if self.emulation_active.get() {
+            self.request_tx
+                .send(ProxyRequest::InputBatch(events, addr))
+                .expect("channel closed");
+        }
+    }
+
     fn remove(&self, addr: SocketAddr) {
         self.request_tx
             .send(ProxyRequest::Remove(addr))
@@ -331,6 +346,7 @@ impl EmulationTask {
                     ProxyRequest::Reenable => break,
                     ProxyRequest::Terminate => return,
                     ProxyRequest::Input(..) => { /* emulation inactive => ignore */ }
+                    ProxyRequest::InputBatch(..) => { /* emulation inactive => ignore */ }
                     ProxyRequest::Remove(..) => { /* emulation inactive => ignore */ }
                 }
             }
@@ -397,6 +413,19 @@ impl EmulationTask {
                         };
                         emulation.consume(event, handle).await?;
                     },
+                    ProxyRequest::InputBatch(events, addr) => {
+                        let handle = match self.handles.get(&addr) {
+                            Some(&handle) => handle,
+                            None => {
+                                let handle = self.next_id;
+                                self.next_id += 1;
+                                emulation.create(handle).await;
+                                self.handles.insert(addr, handle);
+                                handle
+                            }
+                        };
+                        emulation.consume_batch(events, handle).await?;
+                    },
                     ProxyRequest::Remove(addr) => {
                         if let Some(handle) = self.handles.remove(&addr) {
                             emulation.destroy(handle).await;
@@ -424,6 +453,7 @@ async fn wait_for_termination(rx: &mut Receiver<ProxyRequest>) {
         match rx.recv().await.expect("channel closed") {
             ProxyRequest::Terminate => return,
             ProxyRequest::Input(_, _) => continue,
+            ProxyRequest::InputBatch(_, _) => continue,
             ProxyRequest::Remove(_) => continue,
             ProxyRequest::Reenable => continue,
         }

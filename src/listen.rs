@@ -1,5 +1,6 @@
 use futures::{Stream, StreamExt};
-use lan_mouse_proto::{MAX_EVENT_SIZE, ProtoEvent};
+use input_event::Event as InputEvent;
+use lan_mouse_proto::{MAX_EVENT_SIZE, ProtoEvent, batch};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use rustls::pki_types::CertificateDer;
 use std::{
@@ -37,6 +38,10 @@ type ArcConn = Arc<dyn Conn + Send + Sync>;
 pub(crate) enum ListenEvent {
     Msg {
         event: ProtoEvent,
+        addr: SocketAddr,
+    },
+    InputBatch {
+        events: Vec<InputEvent>,
         addr: SocketAddr,
     },
     Accept {
@@ -251,24 +256,47 @@ async fn read_loop(
     conn: ArcConn,
     dtls_tx: Sender<ListenEvent>,
 ) -> Result<(), Error> {
-    let mut b = [0u8; MAX_EVENT_SIZE];
+    let mut buf = [0u8; batch::MAX_DATAGRAM_SIZE];
+    let mut last_seq: HashMap<SocketAddr, u16> = HashMap::new();
 
-    while conn.recv(&mut b).await.is_ok() {
-        match b.try_into() {
-            Ok(event) => dtls_tx
-                .send(ListenEvent::Msg { event, addr })
-                .expect("channel closed"),
-            Err(e) => {
-                // Skip the malformed/unknown datagram and keep
-                // listening. Each DTLS recv returns one full
-                // datagram, so a parse error here can't desync a
-                // stream; the next call gets a fresh, framed
-                // message. This makes the protocol forward-
-                // compatible: a peer running a newer Lan Mouse
-                // version can introduce additional event types
-                // and old peers will simply ignore them rather
-                // than dropping the connection.
-                log::debug!("ignoring undecodable event from {addr}: {e}");
+    loop {
+        let n = match conn.recv(&mut buf).await {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n < 4 {
+            log::debug!("ignoring too short datagram from {addr}: {n} bytes");
+            continue;
+        }
+
+        if buf[0] == batch::MAGIC {
+            // Batched datagram
+            let last_seq_val = last_seq.get(&addr).copied().unwrap_or(u16::MAX);
+            match batch::decode_batch(&buf[..n], last_seq_val) {
+                Ok((events, new_seq)) => {
+                    last_seq.insert(addr, new_seq);
+                    dtls_tx
+                        .send(ListenEvent::InputBatch { events, addr })
+                        .expect("channel closed");
+                }
+                Err(batch::BatchError::StaleSeq) => {
+                    log::debug!("dropping stale batch from {addr}: stale seq");
+                }
+                Err(e) => {
+                    log::warn!("dropping invalid batch from {addr}: {e}");
+                }
+            }
+        } else {
+            // Legacy single event datagram
+            let mut b = [0u8; MAX_EVENT_SIZE];
+            b[..n].copy_from_slice(&buf[..n]);
+            match b.try_into() {
+                Ok(event) => dtls_tx
+                    .send(ListenEvent::Msg { event, addr })
+                    .expect("channel closed"),
+                Err(e) => {
+                    log::debug!("ignoring undecodable event from {addr}: {e}");
+                }
             }
         }
     }
