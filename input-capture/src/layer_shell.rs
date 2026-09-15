@@ -755,6 +755,14 @@ impl Dispatch<WlPointer, ()> for State {
                  */
                 if app.pointer_lock.is_some() {
                     log::warn!("compositor released mouse");
+                    // The compositor force-released the pointer while the
+                    // grab was still held: the capture is dead. Notify the
+                    // daemon so it can tear the session down cleanly
+                    // instead of sending input into a dead session.
+                    if let Some(window) = app.focused.as_ref() {
+                        app.pending_events
+                            .push_back((window.pos, CaptureEvent::End));
+                    }
                 }
                 app.ungrab();
             }

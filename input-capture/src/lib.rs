@@ -39,6 +39,9 @@ pub type CaptureHandle = u64;
 pub enum CaptureEvent {
     /// capture on this capture handle is now active
     Begin,
+    /// capture on this capture handle was force-ended by the
+    /// compositor (e.g. pointer lock broken) — the grab is dead
+    End,
     /// input event coming from capture handle
     Input(Event),
 }
@@ -47,6 +50,7 @@ impl Display for CaptureEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CaptureEvent::Begin => write!(f, "begin capture"),
+            CaptureEvent::End => write!(f, "end capture"),
             CaptureEvent::Input(e) => write!(f, "{e}"),
         }
     }

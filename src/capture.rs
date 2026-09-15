@@ -354,10 +354,18 @@ impl CaptureTask {
                 .expect("channel closed");
         }
 
+        // compositor force-released the grab on this handle: tear the
+        // session down cleanly (sends Leave to the peer, clears state)
+        if event == CaptureEvent::End && Some(handle) == self.active_client {
+            log::info!("releasing capture: compositor ended the grab");
+            return self.release_capture(capture).await;
+        }
+
         let opposite_pos = to_proto_pos(self.get_pos(handle).opposite());
 
         let event = match event {
             CaptureEvent::Begin => ProtoEvent::Enter(opposite_pos),
+            CaptureEvent::End => return Ok(()),
             CaptureEvent::Input(e) => match self.state {
                 // connection not acknowledged, repeat `Enter` event
                 State::WaitingForAck => ProtoEvent::Enter(opposite_pos),
