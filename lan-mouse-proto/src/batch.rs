@@ -403,6 +403,21 @@ mod tests {
     }
 
     #[test]
+    fn pure_motion_batch_is_pending_before_finish() {
+        // Regression: coalesced motion lives in the accumulator with
+        // event_count()==0 until finish() encodes it. A flush path that
+        // gates on event_count alone would reset() and drop the movement.
+        let mut enc = BatchEncoder::new();
+        assert!(!enc.has_pending());
+        enc.push_event(motion(3.0, -7.0)).unwrap();
+        assert!(enc.has_pending());
+        assert_eq!(enc.event_count(), 0); // still in accumulator
+        let buf = enc.finish(1).unwrap();
+        assert_eq!(buf[0], MAGIC);
+        assert_eq!(buf[1], 1); // one motion event encoded
+    }
+
+    #[test]
     fn round_trip_compact_motion() {
         let mut enc = BatchEncoder::new();
         enc.push_event(motion(5.0, -3.0)).unwrap();
