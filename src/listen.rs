@@ -97,6 +97,10 @@ impl LanMouseListener {
                         Ok(())
                     } else {
                         let fingerprint = fingerprints.into_iter().next().expect("fingerprint");
+                        log::warn!(
+                            "rejected client cert: fingerprint {fingerprint} not in authorized_fingerprints (authorized: {:?})",
+                            authorized.read().expect("lock").keys().collect::<Vec<_>>()
+                        );
                         connection_attempts
                             .lock()
                             .expect("lock")
