@@ -82,41 +82,56 @@ impl WlrootsEmulation {
             },
             queue,
         };
-        while emulate.state.keymap.is_none() {
-            emulate.queue.blocking_dispatch(&mut emulate.state)?;
+        // ponytail: single roundtrip instead of blocking until keymap —
+        // mango withholds the wl_keyboard keymap while outputs are off,
+        // and an endless wait here freezes the whole tokio runtime (DTLS included)
+        emulate.queue.roundtrip(&mut emulate.state)?;
+        if emulate.state.keymap.is_none() {
+            log::warn!(
+                "no keymap after init roundtrip; keyboard stays unarmed until the compositor sends it"
+            );
         }
-        // let fd = unsafe { &File::from_raw_fd(emulate.state.keymap.unwrap().1.as_raw_fd()) };
-        // let mmap = unsafe { MmapOptions::new().map_copy(fd).unwrap() };
-        // log::debug!("{:?}", &mmap[..100]);
         Ok(emulate)
     }
 }
 
 impl State {
     fn add_client(&mut self, client: EmulationHandle) {
+        // pointer needs no keymap: motion wakes screens even before the
+        // compositor delivers the keyboard keymap (mango withholds it while
+        // outputs are off)
         let pointer: Vp = self.vpm.create_virtual_pointer(None, &self.qh, ());
-        let keyboard: Vk = self.vkm.create_virtual_keyboard(&self.seat, &self.qh, ());
-
-        // TODO: use server side keymap
-        if let Some((format, fd, size)) = self.keymap.as_ref() {
-            keyboard.keymap(*format, fd.as_fd(), *size);
-        } else {
-            panic!("no keymap");
-        }
-
         let vinput = VirtualInput {
             pointer,
-            keyboard,
+            keyboard: None,
             modifiers: Arc::new(Mutex::new(XMods::empty())),
         };
 
         self.input_for_client.insert(client, vinput);
+        self.arm_keyboard(client);
+    }
+
+    /// Create the virtual keyboard once the keymap arrived; no-op if already
+    /// armed or keymap still pending.
+    fn arm_keyboard(&mut self, client: EmulationHandle) {
+        let Some((format, fd, size)) = self.keymap.as_ref() else {
+            return;
+        };
+        if let Some(vinput) = self.input_for_client.get_mut(&client) {
+            if vinput.keyboard.is_none() {
+                let keyboard: Vk = self.vkm.create_virtual_keyboard(&self.seat, &self.qh, ());
+                keyboard.keymap(*format, fd.as_fd(), *size);
+                vinput.keyboard = Some(keyboard);
+            }
+        }
     }
 
     fn destroy_client(&mut self, handle: EmulationHandle) {
         if let Some(input) = self.input_for_client.remove(&handle) {
             input.pointer.destroy();
-            input.keyboard.destroy();
+            if let Some(keyboard) = input.keyboard.as_ref() {
+                keyboard.destroy();
+            }
         }
     }
 }
@@ -128,6 +143,19 @@ impl Emulation for WlrootsEmulation {
         event: Event,
         handle: EmulationHandle,
     ) -> Result<(), EmulationError> {
+        let needs_keymap = self
+            .state
+            .input_for_client
+            .get(&handle)
+            .is_some_and(|v| v.keyboard.is_none());
+        if needs_keymap {
+            // ponytail: bounded roundtrip to pick up a late keymap (mango
+            // withholds it while outputs are off); skipped entirely once armed
+            if let Err(e) = self.queue.roundtrip(&mut self.state) {
+                log::warn!("keymap roundtrip failed: {e}");
+                return Ok(());
+            }
+        }
         if let Some(virtual_input) = self.state.input_for_client.get(&handle) {
             if self.last_flush_failed {
                 match self.queue.flush() {
@@ -164,6 +192,18 @@ impl Emulation for WlrootsEmulation {
         events: Vec<Event>,
         handle: EmulationHandle,
     ) -> Result<(), EmulationError> {
+        let needs_keymap = self
+            .state
+            .input_for_client
+            .get(&handle)
+            .is_some_and(|v| v.keyboard.is_none());
+        if needs_keymap {
+            // same bounded wait as consume(): pick up a late keymap
+            if let Err(e) = self.queue.roundtrip(&mut self.state) {
+                log::warn!("keymap roundtrip failed: {e}");
+                return Ok(());
+            }
+        }
         if let Some(virtual_input) = self.state.input_for_client.get(&handle) {
             if self.last_flush_failed {
                 match self.queue.flush() {
@@ -207,7 +247,9 @@ impl Emulation for WlrootsEmulation {
 
 struct VirtualInput {
     pointer: Vp,
-    keyboard: Vk,
+    // None until the compositor delivers the keymap (mango withholds it
+    // while outputs are off; pointer works regardless)
+    keyboard: Option<Vk>,
     modifiers: Arc<Mutex<XMods>>,
 }
 
@@ -245,35 +287,40 @@ impl VirtualInput {
                 }
                 self.pointer.frame();
             }
-            Event::Keyboard(e) => match e {
-                KeyboardEvent::Key { time, key, state } => {
-                    self.keyboard.key(time, key, state as u32);
-                    if let Ok(mut mods) = self.modifiers.lock() {
-                        if mods.update_by_key_event(key, state) {
-                            log::trace!("Key triggers modifier change: {mods:?}");
-                            self.keyboard.modifiers(
-                                mods.mask_pressed().bits(),
-                                0,
-                                mods.mask_locks().bits(),
-                                0,
-                            );
+            Event::Keyboard(e) => {
+                let Some(keyboard) = self.keyboard.as_ref() else {
+                    log::debug!("dropping keyboard event: keymap not yet delivered");
+                    return Ok(());
+                };
+                match e {
+                    KeyboardEvent::Key { time, key, state } => {
+                        keyboard.key(time, key, state as u32);
+                        if let Ok(mut mods) = self.modifiers.lock() {
+                            if mods.update_by_key_event(key, state) {
+                                log::trace!("Key triggers modifier change: {mods:?}");
+                                keyboard.modifiers(
+                                    mods.mask_pressed().bits(),
+                                    0,
+                                    mods.mask_locks().bits(),
+                                    0,
+                                );
+                            }
                         }
                     }
-                }
-                KeyboardEvent::Modifiers {
-                    depressed: mods_depressed,
-                    latched: mods_latched,
-                    locked: mods_locked,
-                    group,
-                } => {
-                    // Synchronize internal modifier state, assuming server is authoritative
-                    if let Ok(mut mods) = self.modifiers.lock() {
-                        mods.update_by_mods_event(e);
+                    KeyboardEvent::Modifiers {
+                        depressed: mods_depressed,
+                        latched: mods_latched,
+                        locked: mods_locked,
+                        group,
+                    } => {
+                        // Synchronize internal modifier state, assuming server is authoritative
+                        if let Ok(mut mods) = self.modifiers.lock() {
+                            mods.update_by_mods_event(e);
+                        }
+                        keyboard.modifiers(mods_depressed, mods_latched, mods_locked, group);
                     }
-                    self.keyboard
-                        .modifiers(mods_depressed, mods_latched, mods_locked, group);
                 }
-            },
+            }
         }
         Ok(())
     }
@@ -331,39 +378,45 @@ impl VirtualInput {
                         }
                     }
                 },
-                Event::Keyboard(e) => match e {
-                    KeyboardEvent::Key { time, key, state } => {
-                        self.keyboard.key(*time, *key, *state as u32);
-                        if let Ok(mut mods) = self.modifiers.lock() {
-                            if mods.update_by_key_event(*key, *state) {
-                                log::trace!("Key triggers modifier change in batch: {mods:?}");
-                                self.keyboard.modifiers(
-                                    mods.mask_pressed().bits(),
-                                    0,
-                                    mods.mask_locks().bits(),
-                                    0,
-                                );
+                Event::Keyboard(e) => {
+                    let Some(keyboard) = self.keyboard.as_ref() else {
+                        log::debug!("dropping keyboard event in batch: keymap not yet delivered");
+                        continue;
+                    };
+                    match e {
+                        KeyboardEvent::Key { time, key, state } => {
+                            keyboard.key(*time, *key, *state as u32);
+                            if let Ok(mut mods) = self.modifiers.lock() {
+                                if mods.update_by_key_event(*key, *state) {
+                                    log::trace!("Key triggers modifier change in batch: {mods:?}");
+                                    keyboard.modifiers(
+                                        mods.mask_pressed().bits(),
+                                        0,
+                                        mods.mask_locks().bits(),
+                                        0,
+                                    );
+                                }
                             }
                         }
-                    }
-                    KeyboardEvent::Modifiers {
-                        depressed: mods_depressed,
-                        latched: mods_latched,
-                        locked: mods_locked,
-                        group,
-                    } => {
-                        // Synchronize internal modifier state, assuming server is authoritative
-                        if let Ok(mut mods) = self.modifiers.lock() {
-                            mods.update_by_mods_event(*e);
+                        KeyboardEvent::Modifiers {
+                            depressed: mods_depressed,
+                            latched: mods_latched,
+                            locked: mods_locked,
+                            group,
+                        } => {
+                            // Synchronize internal modifier state, assuming server is authoritative
+                            if let Ok(mut mods) = self.modifiers.lock() {
+                                mods.update_by_mods_event(*e);
+                            }
+                            keyboard.modifiers(
+                                *mods_depressed,
+                                *mods_latched,
+                                *mods_locked,
+                                *group,
+                            );
                         }
-                        self.keyboard.modifiers(
-                            *mods_depressed,
-                            *mods_latched,
-                            *mods_locked,
-                            *group,
-                        );
                     }
-                },
+                }
             }
         }
 
@@ -400,7 +453,15 @@ impl Dispatch<WlKeyboard, ()> for State {
         _: &QueueHandle<Self>,
     ) {
         if let wl_keyboard::Event::Keymap { format, fd, size } = event {
+            let armed = state.keymap.is_some();
             state.keymap = Some((u32::from(format), fd, size));
+            if !armed {
+                // keymap arrived late (mango withholds it while outputs are
+                // off): arm keyboards for all clients created meanwhile
+                for client in state.input_for_client.keys().copied().collect::<Vec<_>>() {
+                    state.arm_keyboard(client);
+                }
+            }
         }
     }
 }
