@@ -268,8 +268,9 @@ async fn read_loop(
             Ok(n) => n,
             Err(_) => break,
         };
-        if n < 4 {
-            log::debug!("ignoring too short datagram from {addr}: {n} bytes");
+        // skip empty datagrams only — legacy control events are short
+        // (Ping=1 B, Pong/Enter=2 B), so anything > 0 is a candidate
+        if n == 0 {
             continue;
         }
 
