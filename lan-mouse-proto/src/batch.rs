@@ -614,4 +614,75 @@ mod tests {
             Err(BatchError::WheelOverflow)
         );
     }
+
+    /// Wire-size math used in the README benchmarks table.
+    #[test]
+    fn wire_sizes() {
+        // legacy motion datagram: event_id(1) + time(u32) + dx(f64) + dy(f64)
+        let (buf, len) = crate::ProtoEvent::Input(motion(1.0, 1.0)).into();
+        assert_eq!(len, 1 + 4 + 8 + 8);
+        let _ = buf;
+
+        // batched: many small motions coalesce into one Compact event
+        // (100 events of (1,0) sum to dx=100, still fits i8)
+        let mut enc = BatchEncoder::new();
+        for _ in 0..100 {
+            enc.push_event(motion(1.0, 0.0)).unwrap();
+        }
+        let datagram = enc.finish(0).unwrap();
+        assert_eq!(datagram.len(), 4 + 3); // header + one Compact Motion
+        assert_eq!(datagram.len(), 7);
+
+        // worst-case per-event: Extended Motion = tag(1) + i16 + i16 = 5 bytes
+        assert_eq!(4 + 64 * 5, MAX_DATAGRAM_SIZE);
+    }
+
+    /// Micro-benchmark for the README. Run explicitly:
+    ///   cargo test -p lan-mouse-proto --release -- --ignored --nocapture bench
+    #[test]
+    #[ignore]
+    fn bench_round_trip() {
+        let n = 10_000;
+        let events: Vec<InputEvent> = (0..n)
+            .map(|i| motion(((i % 7) - 3) as f64, ((i % 5) - 2) as f64))
+            .collect();
+
+        let t = std::time::Instant::now();
+        let mut datagrams = 0usize;
+        let mut bytes = 0usize;
+        for chunk in events.chunks(MAX_BATCH_EVENTS) {
+            let mut enc = BatchEncoder::new();
+            for e in chunk {
+                enc.push_event(*e).unwrap();
+            }
+            let d = enc.finish(datagrams as u16).unwrap();
+            bytes += d.len();
+            datagrams += 1;
+        }
+        let enc_t = t.elapsed();
+
+        let t = std::time::Instant::now();
+        let mut decoded = 0usize;
+        for seq in 0..datagrams {
+            // re-encode to have a datagram to decode
+            let start = seq * MAX_BATCH_EVENTS;
+            let end = (start + MAX_BATCH_EVENTS).min(events.len());
+            let mut enc = BatchEncoder::new();
+            for e in &events[start..end] {
+                enc.push_event(*e).unwrap();
+            }
+            let d = enc.finish(seq as u16).unwrap().to_vec();
+            let last = if seq == 0 { u16::MAX } else { (seq - 1) as u16 };
+            let (evts, _) = decode_batch(&d, last).unwrap();
+            decoded += evts.len();
+        }
+        let dec_t = t.elapsed();
+
+        println!(
+            "encode: {n} events -> {datagrams} datagrams ({bytes} B) in {enc_t:?} | \
+             decode: {decoded} events in {dec_t:?}"
+        );
+        // coalescing collapses each datagram's motions into one event
+        assert_eq!(decoded, datagrams);
+    }
 }

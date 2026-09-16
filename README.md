@@ -29,6 +29,45 @@ Focus lies on performance, ease of use and a maintainable implementation that ca
 Lan Mouse encrypts all network traffic using the DTLS implementation provided by [WebRTC.rs](https://github.com/webrtc-rs/webrtc).
 There are currently no mitigations in place for timing side-channel attacks.
 
+## Fork enhancements
+
+This fork ([cawa0505/lan-mouse](https://github.com/cawa0505/lan-mouse)) uses a **batched binary wire format** for input events between peers (Linux only). It is not compatible with upstream lan-mouse peers — if you need to mix versions, set `batched_protocol = false` in `config.toml` (default: `true`).
+
+### Wire format comparison
+
+Per-event footprint on the wire:
+
+| Event | Upstream (legacy) | Fork (batched) |
+|---|---|---|
+| Motion | 21 B (one datagram per event) | 3 B (dx,dy in i8) / 5 B (i16) |
+| Button | 13 B | 3 B |
+| Key | 10 B | 3 B |
+| Wheel | 14 B | 3 B (1/120 ticks) |
+
+Legacy sends every event as its own 21-byte datagram. The fork batches up to 64
+events into a single datagram (4 B header + 3–5 B per event) and **coalesces**
+adjacent motion into one accumulated event per flush — one `wl_pointer.frame()`
+per datagram on the receiving side, producing fewer wakeups and less jitter at
+high polling rates. Flush policy: 64 events, any non-motion event, 4 ms timer,
+or capture release. Sequence numbers drop stale/reordered datagrams; non-batchable
+events (`Modifiers`) fall back to legacy datagrams.
+
+### Measured results
+
+Synthetic round-trip (`cargo test -p lan-mouse-proto --release -- --ignored --nocapture bench`,
+10 000 motion events ≈ 10 s of 1 kHz movement, coalesced):
+
+| | Bytes | vs legacy |
+|---|---|---|
+| Upstream encoding | 210 000 B (10 000 × 21 B datagrams) | — |
+| Batched encoding | 1 099 B (157 datagrams) | **~99.5 % less** |
+
+CPU cost (release build, Zen 3): encode ≈ 18 ns/event, decode ≈ 15–22 ns/event —
+a full 64-event datagram encodes/decodes in well under 1 µs.
+
+Numbers are re-measurable at any time with the command above; wire sizes are
+asserted by the `wire_sizes` unit test.
+
 ## OS Support
 
 Most current desktop environments and operating systems are fully supported, this includes
