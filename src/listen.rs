@@ -278,8 +278,30 @@ async fn read_loop(
             // Batched datagram
             let last_seq_val = last_seq.get(&addr).copied().unwrap_or(u16::MAX);
             match batch::decode_batch(&buf[..n], last_seq_val) {
-                Ok((events, new_seq)) => {
+                Ok((mut events, new_seq)) => {
                     last_seq.insert(addr, new_seq);
+                    // wire format carries no timestamps: stamp receive time
+                    // (some compositors, e.g. mango, drop pointer events
+                    // with time == 0)
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u32;
+                    for event in &mut events {
+                        match event {
+                            InputEvent::Pointer(p) => match p {
+                                input_event::PointerEvent::Motion { time, .. }
+                                | input_event::PointerEvent::Button { time, .. }
+                                | input_event::PointerEvent::Axis { time, .. } => *time = now,
+                                input_event::PointerEvent::AxisDiscrete120 { .. } => {}
+                            },
+                            InputEvent::Keyboard(k) => {
+                                if let input_event::KeyboardEvent::Key { time, .. } = k {
+                                    *time = now;
+                                }
+                            }
+                        }
+                    }
                     dtls_tx
                         .send(ListenEvent::InputBatch { events, addr })
                         .expect("channel closed");
