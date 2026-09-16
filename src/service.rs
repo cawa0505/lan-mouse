@@ -234,6 +234,7 @@ impl Service {
                 pos: c.pos,
                 active: s.active,
                 enter_hook: c.cmd,
+                priority: c.priority,
             })
             .collect();
         self.config.set_clients(clients);

@@ -140,6 +140,9 @@ pub struct ClientConfig {
     pub pos: Position,
     /// enter hook
     pub cmd: Option<String>,
+    /// priority for capture arbitration when multiple clients share an edge (higher wins, default 0)
+    #[serde(default)]
+    pub priority: u32,
 }
 
 impl Default for ClientConfig {
@@ -150,6 +153,7 @@ impl Default for ClientConfig {
             fix_ips: Default::default(),
             pos: Default::default(),
             cmd: None,
+            priority: 0,
         }
     }
 }

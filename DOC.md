@@ -85,3 +85,16 @@ Configuration options are defined in `config.toml` and can be overridden via com
 - `release_bind`: Key sequence to release control (default: ["KeyLeftCtrl", "KeyLeftShift", "KeyLeftMeta", "KeyLeftAlt"])
 - `batched_protocol`: Enable batched binary wire format (default: true; set false for upstream compatibility)
 
+Per-client options under `[[clients]]`:
+
+- `position`: Screen edge this client sits on (`left` | `right` | `top` | `bottom`)
+- `priority`: Capture arbitration weight when multiple active clients share the same edge (default: 0; highest wins, ties fall back to first configured)
+
+```toml
+[[clients]]
+hostname = "cybertron"
+ips = ["192.168.1.10"]
+position = "bottom"
+priority = 10
+```
+

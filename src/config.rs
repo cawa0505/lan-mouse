@@ -81,6 +81,7 @@ struct TomlClient {
     position: Option<Position>,
     activate_on_startup: Option<bool>,
     enter_hook: Option<String>,
+    priority: Option<u32>,
 }
 
 impl ConfigToml {
@@ -276,6 +277,7 @@ pub struct ConfigClient {
     pub pos: Position,
     pub active: bool,
     pub enter_hook: Option<String>,
+    pub priority: u32,
 }
 
 impl From<TomlClient> for ConfigClient {
@@ -286,6 +288,7 @@ impl From<TomlClient> for ConfigClient {
         let ips = HashSet::from_iter(toml.ips.into_iter().flatten());
         let port = toml.port.unwrap_or(DEFAULT_PORT);
         let pos = toml.position.unwrap_or_default();
+        let priority = toml.priority.unwrap_or(0);
         Self {
             ips,
             hostname,
@@ -293,6 +296,7 @@ impl From<TomlClient> for ConfigClient {
             pos,
             active,
             enter_hook,
+            priority,
         }
     }
 }
@@ -312,6 +316,11 @@ impl From<ConfigClient> for TomlClient {
         let position = Some(client.pos);
         let activate_on_startup = if client.active { Some(true) } else { None };
         let enter_hook = client.enter_hook;
+        let priority = if client.priority == 0 {
+            None
+        } else {
+            Some(client.priority)
+        };
         Self {
             hostname,
             host_name,
@@ -320,6 +329,7 @@ impl From<ConfigClient> for TomlClient {
             position,
             activate_on_startup,
             enter_hook,
+            priority,
         }
     }
 }

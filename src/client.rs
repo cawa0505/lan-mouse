@@ -33,6 +33,7 @@ impl ClientManager {
             port: config_client.port,
             pos: config_client.pos,
             cmd: config_client.enter_hook,
+            priority: config_client.priority,
         };
         let state = ClientState {
             active: config_client.active,
@@ -108,18 +109,16 @@ impl ClientManager {
     }
 
     /// get the client at the given position
+    /// among all active clients at `pos`, the one with the highest priority
+    /// wins; ties are broken by lowest handle index (preserving the previous
+    /// "first in list" behavior when all priorities are equal)
     pub fn client_at(&self, pos: Position) -> Option<ClientHandle> {
         self.clients
             .borrow()
             .iter()
-            .find_map(|(k, (c, s))| {
-                if s.active && c.pos == pos {
-                    Some(k)
-                } else {
-                    None
-                }
-            })
-            .map(|p| p as ClientHandle)
+            .filter(|(_, (c, s))| s.active && c.pos == pos)
+            .max_by_key(|(k, (c, _))| (c.priority, std::cmp::Reverse(*k)))
+            .map(|(k, _)| k as ClientHandle)
     }
 
     pub(crate) fn get_hostname(&self, handle: ClientHandle) -> Option<String> {
@@ -315,5 +314,53 @@ impl ClientManager {
             .borrow()
             .get(handle as usize)
             .map(|(_, s)| s.ips.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ConfigClient;
+
+    fn client(pos: Position, priority: u32) -> ConfigClient {
+        ConfigClient {
+            ips: HashSet::new(),
+            hostname: None,
+            port: 0,
+            pos,
+            active: true,
+            enter_hook: None,
+            priority,
+        }
+    }
+
+    #[test]
+    fn client_at_prefers_highest_priority() {
+        let manager = ClientManager::default();
+        manager.add_with_config(client(Position::Bottom, 1));
+        let high = manager.add_with_config(client(Position::Bottom, 5));
+        let other = manager.add_with_config(client(Position::Top, 5));
+
+        assert_eq!(manager.client_at(Position::Bottom), Some(high));
+        assert_eq!(manager.client_at(Position::Top), Some(other));
+        assert_eq!(manager.client_at(Position::Left), None);
+    }
+
+    #[test]
+    fn client_at_breaks_ties_by_lowest_handle() {
+        let manager = ClientManager::default();
+        let first = manager.add_with_config(client(Position::Right, 0));
+        manager.add_with_config(client(Position::Right, 0));
+
+        assert_eq!(manager.client_at(Position::Right), Some(first));
+    }
+
+    #[test]
+    fn client_at_ignores_inactive_clients() {
+        let manager = ClientManager::default();
+        let inactive = manager.add_with_config(client(Position::Bottom, 99));
+        manager.deactivate_client(inactive);
+
+        assert_eq!(manager.client_at(Position::Bottom), None);
     }
 }
