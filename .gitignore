@@ -15,3 +15,10 @@ repo
 
 # session tooling state
 .cortexkit/
+# Code Relay (local state)
+relay.json
+RESUME.md
+next_step.md
+
+# Code Relay (local state)
+.relay/

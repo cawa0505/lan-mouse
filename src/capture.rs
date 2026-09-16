@@ -464,7 +464,10 @@ impl CaptureTask {
             return;
         }
         self.batch_pending = false;
-        if self.encoder.event_count() == 0 {
+        // has_pending (not event_count): pure-motion batches hold everything
+        // in the coalescing accumulator until finish(); event_count alone
+        // would be 0 and silently drop the movement
+        if !self.encoder.has_pending() {
             self.encoder.reset();
             return;
         }

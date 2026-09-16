@@ -154,6 +154,12 @@ impl BatchEncoder {
         self.event_count as usize
     }
 
+    /// true if anything is pending: encoded events OR coalesced motion
+    /// still sitting in the accumulator (flushed only at `finish()`).
+    pub fn has_pending(&self) -> bool {
+        self.event_count > 0 || self.has_motion
+    }
+
     /// drop all buffered events (used after a failed send)
     pub fn reset(&mut self) {
         self.pos = 4;
