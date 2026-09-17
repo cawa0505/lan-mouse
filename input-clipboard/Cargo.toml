@@ -1,0 +1,13 @@
+[package]
+name = "input-clipboard"
+description = "Wayland clipboard OS interface layer for lan-mouse"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/feschber/lan-mouse"
+
+[dependencies]
+wayland-client = { version = "0.31.1" }
+wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
+thiserror = "2.0.0"
+log = "0.4.22"

@@ -1594,6 +1594,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "input-clipboard"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "thiserror 2.0.18",
+ "wayland-client",
+ "wayland-protocols",
+]
+
+[[package]]
 name = "input-emulation"
 version = "0.4.0"
 dependencies = [

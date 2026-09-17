@@ -3,6 +3,7 @@ members = [
     "input-capture",
     "input-emulation",
     "input-event",
+    "input-clipboard",
     "lan-mouse-ipc",
     "lan-mouse-cli",
     "lan-mouse-gtk",
