@@ -19,6 +19,6 @@
 ## 4. 驗證
 
 - [x] build success（`cargo build/test/clippy --workspace` 全綠；VeloKVM Server 未就緒，live roundtrip 延後）
-- [ ] headless wlroots roundtrip：寫入 → Changed → 讀取；origin 抑制無迴圈（`cargo test -p input-clipboard -- --ignored`，需 live compositor）
+- [x] live roundtrip（niri 26.04 實測通過 2026-09-18）：offer → Changed → read 內容一致；需修 event_created_child（DataOffer 建 child object）+ read 回傳 `+ Send`（讀取須與 dispatch pump 並行，單執行緒死鎖）。megatron（mango/wlroots）待測
 - [ ] 手動矩陣：Sway / Hyprland / KWin 6.7+
 - [ ] README Roadmap 勾選 `Clipboard support`

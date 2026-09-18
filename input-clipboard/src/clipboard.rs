@@ -4,7 +4,7 @@ use std::{
 };
 
 use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
+    Connection, Dispatch, EventQueue, QueueHandle, delegate_noop, event_created_child,
     globals::{GlobalListContents, registry_queue_init},
     protocol::{wl_registry, wl_seat},
 };
@@ -119,7 +119,7 @@ impl ClipboardSession {
         &mut self,
         mime: &str,
         max_len: usize,
-    ) -> Result<Box<dyn io::Read>, ClipboardError> {
+    ) -> Result<Box<dyn io::Read + Send>, ClipboardError> {
         if !mime.starts_with("text/plain") {
             return Err(ClipboardError::UnsupportedMime(mime.to_string()));
         }
@@ -235,6 +235,10 @@ delegate_noop!(State: ignore wl_seat::WlSeat);
 delegate_noop!(State: ignore ExtDataControlManagerV1);
 
 impl Dispatch<ExtDataControlDeviceV1, ()> for State {
+    // DataOffer events create a new offer object (opcode 0)
+    event_created_child!(State, ExtDataControlDeviceV1, [
+        ext_data_control_device_v1::EVT_DATA_OFFER_OPCODE => (ExtDataControlOfferV1, ())
+    ]);
     fn event(
         state: &mut Self,
         _: &ExtDataControlDeviceV1,
@@ -317,6 +321,7 @@ impl Dispatch<ExtDataControlSourceV1, ()> for State {
 #[test]
 #[ignore = "requires a live wayland compositor with ext-data-control-v1"]
 fn live_roundtrip_offer_then_read() {
+    use std::sync::mpsc;
     let mut session = ClipboardSession::new().expect("session");
     let payload = b"lan-mouse clipboard roundtrip".to_vec();
     session
@@ -328,7 +333,21 @@ fn live_roundtrip_offer_then_read() {
     let mut reader = session
         .read("text/plain;charset=utf-8", MAX_CLIPBOARD_SIZE)
         .expect("read");
-    let mut got = Vec::new();
-    reader.read_to_end(&mut got).expect("read_to_end");
-    assert_eq!(got, payload);
+    // the reader only sees data once OUR source's Send event is dispatched,
+    // so pumping must happen concurrently with reading
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut got = Vec::new();
+        let res = reader.read_to_end(&mut got).map(|_| got);
+        let _ = tx.send(res);
+    });
+    let mut got = None;
+    for _ in 0..50 {
+        if let Ok(Ok(v)) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            got = Some(v);
+            break;
+        }
+        session.event_queue.roundtrip(&mut session.state).unwrap();
+    }
+    assert_eq!(got.expect("read within timeout"), payload);
 }
