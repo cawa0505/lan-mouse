@@ -12,7 +12,8 @@
 - [ ] 2.4 實作 `ClipboardTriggerPush`，主動對目標 client 的 TCP 9022 發起單次 Noise_IK 握手並回報延遲指標。
 
 ## 3. CLI 命令列工具 (`lan-mouse-cli`)
-- [ ] 3.1 增加 `Clipboard` 子命令列（`status`, `enable`, `disable`, `set-key`, `test-push`）。
+- [ ] 3.1 增加 `Clipboard` 子命令列（`status`, `enable`, `disable`, `test-push`）。
+  - `ponytail:` `set-key` 主導權移交給 `velokvm peer add --pub`（見 `lan-mouse-cli-velokvm-onboarding`），本變更不實作，避免雙寫入路徑漂移。
 - [ ] 3.2 實作格式化表格輸出與 `--json` 結構化 JSON 輸出（供 Agent 與自動化腳本使用）。
 - [ ] 3.3 實作適當的 Exit Code（連線成功為 0，對端離線或金鑰不匹配回傳特定錯誤碼）。
 

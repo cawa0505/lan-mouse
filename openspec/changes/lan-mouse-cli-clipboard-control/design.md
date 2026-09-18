@@ -46,7 +46,9 @@ pub enum FrontendRequest {
     /// 針對指定 client 啟用/停用剪貼簿同步
     ClipboardSetEnabled { id: ClientHandle, enabled: bool },
     /// 更新指定 client 的 Noise_IK 剪貼簿公鑰 (hex)
-    ClipboardSetKey { id: ClientHandle, key: String },
+    /// deferred：主導權移交 `velokvm peer add --pub`（lan-mouse-cli-velokvm-onboarding），
+    /// 金鑰單一寫入路徑；本變更不實作此變體
+    // ClipboardSetKey { id: ClientHandle, key: String },
     /// 觸發對特定 client 的手動測試推送 (文本內容)
     ClipboardTriggerPush { id: ClientHandle, text: String },
 }
@@ -103,8 +105,8 @@ lan-mouse-cli clipboard status --json
 lan-mouse-cli clipboard enable <client_id>
 lan-mouse-cli clipboard disable <client_id>
 
-# 3. 配置對端公鑰
-lan-mouse-cli clipboard set-key <client_id> --key <PEER_HEX_KEY>
+# 3. 配置對端公鑰 — deferred：主導權移交 `velokvm peer add --pub`
+#    （見 lan-mouse-cli-velokvm-onboarding；金鑰單一寫入路徑）
 
 # 4. 手動測試推送 (驗證連線與傳輸延遲)
 lan-mouse-cli clipboard test-push <client_id> --text "Agent probe ping" [--json]
