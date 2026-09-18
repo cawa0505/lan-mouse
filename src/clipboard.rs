@@ -214,21 +214,27 @@ fn serve_conn(
             }
             Ok(ClipboardMsg::Complete { transfer_id }) => match assembler.complete() {
                 Ok(data) => {
-                    let mut session = match ClipboardSession::new() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            log::error!("clipboard: failed to create session: {e}");
-                            return Ok(());
-                        }
-                    };
-                    match session.offer(&[SUPPORTED_MIME], data) {
-                        Ok(_) => {
-                            if let Ok(mut g) = grace.lock() {
-                                *g = Some(Instant::now());
+                    // Wayland ExtDataControlSourceV1 requires an active event loop to respond
+                    // to the compositor's `Send` event when a target app pastes.
+                    // If session is dropped immediately, the selection offer is revoked.
+                    // wl-copy forks a daemon process natively and handles the selection lifecycle safely.
+                    if let Ok(text) = String::from_utf8(data) {
+                        match std::process::Command::new("wl-copy")
+                            .arg("--")
+                            .arg(&text)
+                            .status()
+                        {
+                            Ok(status) if status.success() => {
+                                if let Ok(mut g) = grace.lock() {
+                                    *g = Some(Instant::now());
+                                }
+                                log::info!("clipboard: received transfer #{transfer_id} from {remote} and wrote to clipboard via wl-copy");
                             }
-                            log::info!("clipboard: received transfer #{transfer_id} from {remote}");
+                            Ok(status) => log::error!("clipboard: wl-copy exited with {status}"),
+                            Err(e) => log::error!("clipboard: failed to execute wl-copy: {e}"),
                         }
-                        Err(e) => log::error!("clipboard: failed to offer to clipboard: {e}"),
+                    } else {
+                        log::warn!("clipboard: received non-utf8 data for transfer #{transfer_id}");
                     }
                 }
                 Err(e) => log::warn!("clipboard: incomplete transfer: {e}"),
