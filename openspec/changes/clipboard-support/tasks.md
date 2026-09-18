@@ -20,5 +20,7 @@
 
 - [x] build success（`cargo build/test/clippy --workspace` 全綠；VeloKVM Server 未就緒，live roundtrip 延後）
 - [x] live roundtrip（niri 26.04 實測通過 2026-09-18）：offer → Changed → read 內容一致；需修 event_created_child（DataOffer 建 child object）+ read 回傳 `+ Send`（讀取須與 dispatch pump 並行，單執行緒死鎖）。megatron（mango/wlroots）待測
+- [x] wire 傳輸互通性初測（2026-09-18）：cybertron ↔ megatron、cybertron ↔ arhat、megatron → arhat 全綠，未授權 key fail-closed 驗證通過
+- [x] daemon 整合（Step 2 / Path B）：`lan-mouse` 內嵌 `[clipboard]` 支援，依賴 `velokvm-proto`，提供雙 thread watcher/responder 與 cross-session grace 迴圈抑制
 - [ ] 手動矩陣：Sway / Hyprland / KWin 6.7+
 - [ ] README Roadmap 勾選 `Clipboard support`

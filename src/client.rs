@@ -34,6 +34,8 @@ impl ClientManager {
             pos: config_client.pos,
             cmd: config_client.enter_hook,
             priority: config_client.priority,
+            clipboard: config_client.clipboard,
+            clipboard_key: config_client.clipboard_key,
         };
         let state = ClientState {
             active: config_client.active,
@@ -331,6 +333,8 @@ mod tests {
             active: true,
             enter_hook: None,
             priority,
+            clipboard: false,
+            clipboard_key: None,
         }
     }
 

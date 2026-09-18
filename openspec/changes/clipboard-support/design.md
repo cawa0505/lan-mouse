@@ -35,8 +35,11 @@ pub fn offer(mimes: &[&str], provider: Provider) -> Origin;                 // �
 ## 傳輸（範圍外）
 
 VeloKVM 負責：專用 TCP + Noise_IK bulk channel（`VeloKVM/openspec/changes/clipboard-sync/`）。本 crate 不引入任何網路依賴。
+上層 `lan-mouse` daemon 以 Path B 直接依賴 `velokvm-proto`（`git@gitlab.com:saaslab/velokvm.git`），內嵌 watcher 與 responder thread 處理同步。
 
 - Server port：**9022/tcp**（2026-09-18 決定；VeloKVM 端 spec 需同步此值）
+- Wire 協議：u16 big-endian 分框 + `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`（0-RTT），進入 transport mode 後傳輸 `ClipboardMsg`（Offer / Chunk / Complete / Abort）。
+- 迴圈抑制：跨 session 採 500ms 寫入寬限窗（grace window）避免自發 ping-pong。
 
 ## License
 

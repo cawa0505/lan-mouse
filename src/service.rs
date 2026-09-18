@@ -107,6 +107,17 @@ impl Service {
         let emulation_backend = config.emulation_backend().map(|b| b.into());
         let emulation = Emulation::new(emulation_backend, listener);
 
+        // clipboard sync (opt-in; spawns its own threads, no-op when disabled)
+        if let Some(clip) = config.clipboard_config() {
+            if clip.enabled {
+                let peers = crate::clipboard::peers(&config.clients(), clip.port);
+                match crate::clipboard::spawn(clip, peers) {
+                    Some(_) => log::info!("clipboard sync enabled"),
+                    None => log::warn!("clipboard sync failed to start"),
+                }
+            }
+        }
+
         // create dns resolver
         let resolver = DnsResolver::new()?;
 
@@ -235,6 +246,8 @@ impl Service {
                 active: s.active,
                 enter_hook: c.cmd,
                 priority: c.priority,
+                clipboard: c.clipboard,
+                clipboard_key: c.clipboard_key,
             })
             .collect();
         self.config.set_clients(clients);

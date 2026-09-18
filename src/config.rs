@@ -70,6 +70,25 @@ struct ConfigToml {
     cert_path: Option<PathBuf>,
     clients: Option<Vec<TomlClient>>,
     authorized_fingerprints: Option<HashMap<String, String>>,
+    clipboard: Option<ClipboardToml>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ClipboardToml {
+    pub enabled: Option<bool>,
+    pub port: Option<u16>, // default 9022
+    pub private_key_path: Option<String>,
+    pub allow_keys: Option<Vec<String>>, // hex public keys of peers allowed to push to us
+}
+
+/// resolved clipboard sync config with defaults applied
+#[derive(Debug, Clone)]
+pub struct ClipboardConfig {
+    pub enabled: bool,
+    pub port: u16,
+    pub private_key_path: Option<String>,
+    pub allow_keys: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
@@ -82,6 +101,8 @@ struct TomlClient {
     activate_on_startup: Option<bool>,
     enter_hook: Option<String>,
     priority: Option<u32>,
+    clipboard: Option<bool>,
+    clipboard_key: Option<String>,
 }
 
 impl ConfigToml {
@@ -278,6 +299,8 @@ pub struct ConfigClient {
     pub active: bool,
     pub enter_hook: Option<String>,
     pub priority: u32,
+    pub clipboard: bool,
+    pub clipboard_key: Option<String>,
 }
 
 impl From<TomlClient> for ConfigClient {
@@ -289,6 +312,8 @@ impl From<TomlClient> for ConfigClient {
         let port = toml.port.unwrap_or(DEFAULT_PORT);
         let pos = toml.position.unwrap_or_default();
         let priority = toml.priority.unwrap_or(0);
+        let clipboard = toml.clipboard.unwrap_or(false);
+        let clipboard_key = toml.clipboard_key;
         Self {
             ips,
             hostname,
@@ -297,6 +322,8 @@ impl From<TomlClient> for ConfigClient {
             active,
             enter_hook,
             priority,
+            clipboard,
+            clipboard_key,
         }
     }
 }
@@ -321,6 +348,8 @@ impl From<ConfigClient> for TomlClient {
         } else {
             Some(client.priority)
         };
+        let clipboard = if client.clipboard { Some(true) } else { None };
+        let clipboard_key = client.clipboard_key;
         Self {
             hostname,
             host_name,
@@ -330,6 +359,8 @@ impl From<ConfigClient> for TomlClient {
             activate_on_startup,
             enter_hook,
             priority,
+            clipboard,
+            clipboard_key,
         }
     }
 }
@@ -485,6 +516,22 @@ impl Config {
             .unwrap_or(true)
     }
 
+    /// resolved clipboard sync config (None when no `[clipboard]` section)
+    pub fn clipboard_config(&self) -> Option<ClipboardConfig> {
+        let clip = self.config_toml.as_ref()?.clipboard.clone()?;
+        Some(ClipboardConfig {
+            enabled: clip.enabled.unwrap_or(false),
+            port: clip.port.unwrap_or(velokvm_proto::DEFAULT_PORT),
+            private_key_path: clip.private_key_path,
+            allow_keys: clip.allow_keys.unwrap_or_default(),
+        })
+    }
+
+    /// whether clipboard sync is enabled
+    pub fn clipboard_enabled(&self) -> bool {
+        self.clipboard_config().map(|c| c.enabled).unwrap_or(false)
+    }
+
     /// the port to use (initially)
     pub fn port(&self) -> u16 {
         self.args
@@ -595,5 +642,63 @@ impl Config {
         let _ = self.watch();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_config_roundtrip() {
+        let toml_str = r#"
+            [clipboard]
+            enabled = true
+            port = 9022
+            private_key_path = "/tmp/clipboard.key"
+            allow_keys = ["aa11", "bb22"]
+
+            [[clients]]
+            hostname = "peer"
+            ips = ["192.168.1.5"]
+            clipboard = true
+            clipboard_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        "#;
+        let toml: ConfigToml = toml::from_str(toml_str).expect("parse config");
+
+        let clip = toml.clipboard.expect("clipboard section");
+        assert_eq!(clip.enabled, Some(true));
+        assert_eq!(clip.port, Some(9022));
+        assert_eq!(clip.private_key_path.as_deref(), Some("/tmp/clipboard.key"));
+        assert_eq!(
+            clip.allow_keys,
+            Some(vec!["aa11".to_string(), "bb22".to_string()])
+        );
+
+        let client = toml
+            .clients
+            .expect("clients")
+            .into_iter()
+            .next()
+            .expect("one client");
+        assert_eq!(client.clipboard, Some(true));
+        assert_eq!(
+            client.clipboard_key.as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+
+        // round-trip through ConfigClient → TomlClient must preserve the fields
+        let cc: ConfigClient = client.into();
+        assert!(cc.clipboard);
+        assert_eq!(
+            cc.clipboard_key.as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+        let back: TomlClient = cc.into();
+        assert_eq!(back.clipboard, Some(true));
+        assert_eq!(
+            back.clipboard_key.as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
     }
 }

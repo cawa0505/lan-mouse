@@ -35,6 +35,8 @@ lan-mouse-cli = { path = "lan-mouse-cli", version = "0.3.0" }
 lan-mouse-gtk = { path = "lan-mouse-gtk", version = "0.3.0", optional = true }
 lan-mouse-ipc = { path = "lan-mouse-ipc", version = "0.3.0" }
 lan-mouse-proto = { path = "lan-mouse-proto", version = "0.3.0" }
+input-clipboard = { path = "input-clipboard", version = "0.1.0" }
+velokvm-proto = { path = "/home/zeng/Workspace/velokvm/crates/velokvm-proto" } # TODO: switch to git dep git@gitlab.com:saaslab/velokvm.git
 shadow-rs = { version = "1.2.0", features = ["metadata"] }
 
 toml = "0.8"
@@ -68,6 +70,8 @@ rustls = { version = "0.23.12", default-features = false, features = [
 rcgen = "0.13.1"
 sha2 = "0.10.8"
 notify = "8.2.0"
+snow = { version = "0.9", default-features = false, features = ["ring-accelerated"] }
+rand = "0.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.148"

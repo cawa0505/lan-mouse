@@ -143,6 +143,12 @@ pub struct ClientConfig {
     /// priority for capture arbitration when multiple clients share an edge (higher wins, default 0)
     #[serde(default)]
     pub priority: u32,
+    /// clipboard sync enabled for this client
+    #[serde(default)]
+    pub clipboard: bool,
+    /// peer's clipboard public key (hex) used for Noise_IK pushes
+    #[serde(default)]
+    pub clipboard_key: Option<String>,
 }
 
 impl Default for ClientConfig {
@@ -154,6 +160,8 @@ impl Default for ClientConfig {
             pos: Default::default(),
             cmd: None,
             priority: 0,
+            clipboard: false,
+            clipboard_key: None,
         }
     }
 }
