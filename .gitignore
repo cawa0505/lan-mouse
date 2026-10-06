@@ -13,7 +13,7 @@ extfile.conf
 .flatpak-builder
 repo
 
-# session tooling state
+# voice model cache
 .cortexkit/
 # Code Relay (local state)
 relay.json
