@@ -13,7 +13,6 @@ extfile.conf
 .flatpak-builder
 repo
 
-# voice model cache
 .cortexkit/
 # Code Relay (local state)
 relay.json
